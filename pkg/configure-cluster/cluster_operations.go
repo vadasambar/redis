@@ -55,7 +55,7 @@ func (c Config) addNode(pod *core.Pod, newAddr, existingAddr, masterId string) e
 
 func (c Config) deleteNode(pod *core.Pod, existingAddr, deletingNodeID string) error {
 	_, err := exec.ExecIntoPod(c.RestConfig, pod, exec.Command(c.DeleteNodeCmd(existingAddr, deletingNodeID)...))
-	if err != nil {
+	if err != nil && !strings.Contains(err.Error(), "command terminated with exit code 1") {
 		return errors.Wrapf(err, "Failed to delete node with ID %q", deletingNodeID)
 	}
 
