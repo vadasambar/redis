@@ -78,6 +78,10 @@ type RedisSpec struct {
 	// Storage spec to specify how storage shall be used.
 	Storage *core.PersistentVolumeClaimSpec `json:"storage,omitempty" protobuf:"bytes,6,opt,name=storage"`
 
+	// Init is used to initialize database
+	// +optional
+	Init *InitSpec `json:"init,omitempty" protobuf:"bytes,16,opt,name=init"`
+
 	// Monitor is used monitor database instance
 	// +optional
 	Monitor *mona.AgentSpec `json:"monitor,omitempty" protobuf:"bytes,7,opt,name=monitor"`
@@ -98,6 +102,10 @@ type RedisSpec struct {
 	// employed to update Pods in the StatefulSet when a revision is made to
 	// Template.
 	UpdateStrategy apps.StatefulSetUpdateStrategy `json:"updateStrategy,omitempty" protobuf:"bytes,11,opt,name=updateStrategy"`
+
+	// TLS contains tls configurations for client and server.
+	// +optional
+	TLS *TLSConfig `json:"tls,omitempty" protobuf:"bytes,15,opt,name=tls"`
 
 	// Indicates that the database is paused and controller will not sync any changes made to this spec.
 	// +optional
