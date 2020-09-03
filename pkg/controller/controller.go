@@ -29,7 +29,6 @@ import (
 
 	"github.com/appscode/go/log"
 	pcm "github.com/coreos/prometheus-operator/pkg/client/versioned/typed/monitoring/v1"
-	cm "github.com/jetstack/cert-manager/pkg/client/clientset/versioned"
 	core "k8s.io/api/core/v1"
 	crd_cs "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -75,19 +74,17 @@ func New(
 	promClient pcm.MonitoringV1Interface,
 	opt amc.Config,
 	topology *core_util.Topology,
-	cmClientset cm.Interface,
 	recorder record.EventRecorder,
 ) *Controller {
 	return &Controller{
 		Controller: &amc.Controller{
-			ClientConfig:      clientConfig,
-			Client:            client,
-			ExtClient:         extClient,
-			CRDClient:         crdClient,
-			DynamicClient:     dynamicClient,
-			AppCatalogClient:  appCatalogClient,
-			CertManagerClient: cmClientset,
-			ClusterTopology:   topology,
+			ClientConfig:     clientConfig,
+			Client:           client,
+			ExtClient:        extClient,
+			CRDClient:        crdClient,
+			DynamicClient:    dynamicClient,
+			AppCatalogClient: appCatalogClient,
+			ClusterTopology:  topology,
 		},
 		Config:     opt,
 		promClient: promClient,
