@@ -225,9 +225,9 @@ bin/.container-$(DOTFILE_IMAGE)-%: bin/$(OS)_$(ARCH)/$(BIN) $(DOCKERFILE_%)
 	@docker images -q $(IMAGE):$(TAG_$*) > $@
 	@echo
 
-push: bin/.push-$(DOTFILE_IMAGE)-PROD bin/.push-$(DOTFILE_IMAGE)-DBG
+push: bin/.push-$(DOTFILE_IMAGE)-PROD
 bin/.push-$(DOTFILE_IMAGE)-%: bin/.container-$(DOTFILE_IMAGE)-%
-	@docker push $(IMAGE):$(TAG_$*)
+	@kind load docker-image $(IMAGE):$(TAG_$*)
 	@echo "pushed: $(IMAGE):$(TAG_$*)"
 	@echo
 
@@ -348,7 +348,7 @@ install:
 		--set operator.registry=$(REGISTRY) \
 		--set operator.repository=rd-operator \
 		--set operator.tag=$(TAG) \
-		--set imagePullPolicy=Always \
+		--set imagePullPolicy=IfNotPresent \
 		$(IMAGE_PULL_SECRETS); \
 	kubectl wait --for=condition=Available apiservice -l 'app.kubernetes.io/name=kubedb,app.kubernetes.io/instance=kubedb' --timeout=5m; \
 	until kubectl get crds redisversions.catalog.kubedb.com -o=jsonpath='{.items[0].metadata.name}' &> /dev/null; do sleep 1; done; \

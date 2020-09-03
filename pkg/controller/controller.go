@@ -24,7 +24,8 @@ import (
 	kutildb "kubedb.dev/apimachinery/client/clientset/versioned/typed/kubedb/v1alpha1/util"
 	api_listers "kubedb.dev/apimachinery/client/listers/kubedb/v1alpha1"
 	amc "kubedb.dev/apimachinery/pkg/controller"
-	"kubedb.dev/apimachinery/pkg/controller/restoresession"
+	"kubedb.dev/apimachinery/pkg/controller/stash/restorebatch"
+	"kubedb.dev/apimachinery/pkg/controller/stash/restoresession"
 	"kubedb.dev/apimachinery/pkg/eventer"
 
 	"github.com/appscode/go/log"
@@ -103,6 +104,7 @@ func (c *Controller) EnsureCustomResourceDefinitions() error {
 func (c *Controller) Init() error {
 	c.initWatcher()
 	c.RSQueue = restoresession.NewController(c.Controller, c, c.Config, nil, c.recorder).AddEventHandlerFunc(c.selector)
+	c.RBQueue = restorebatch.NewController(c.Controller, c, c.Config, nil, c.recorder).AddEventHandlerFunc(c.selector)
 
 	return nil
 }
@@ -118,7 +120,7 @@ func (c *Controller) Run(stopCh <-chan struct{}) {
 	go c.StartAndRunControllers(stopCh)
 }
 
-// StartAndRunControllers starts InformetFactory and runs queue.worker
+// StartAndRunControllers starts InformerFactory and runs queue.worker
 func (c *Controller) StartAndRunControllers(stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
 
@@ -142,6 +144,7 @@ func (c *Controller) StartAndRunControllers(stopCh <-chan struct{}) {
 			}
 		}
 		c.RSQueue.Run(stopCh)
+		c.RBQueue.Run(stopCh)
 	}()
 
 	// Wait for all involved caches to be synced, before processing items from the queue is started

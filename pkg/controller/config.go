@@ -19,7 +19,8 @@ package controller
 import (
 	"context"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"kubedb.dev/apimachinery/pkg/controller/restoresession"
+	"kubedb.dev/apimachinery/pkg/controller/stash/restorebatch"
+	"kubedb.dev/apimachinery/pkg/controller/stash/restoresession"
 
 	cs "kubedb.dev/apimachinery/client/clientset/versioned"
 	amc "kubedb.dev/apimachinery/pkg/controller"
@@ -94,6 +95,9 @@ func (c *OperatorConfig) New() (*Controller, error) {
 
 	// Initialize stash restoresession Informer. Later EventHandler will be added to these informers.
 	ctrl.RSInformer = restoresession.NewController(ctrl.Controller, ctrl, ctrl.Config, tweakListOptions, recorder).InitInformer()
+
+	// Initialize stash restorebatch Informer. Later EventHandler will be added to these informers.
+	ctrl.RBInformer = restorebatch.NewController(ctrl.Controller, ctrl, ctrl.Config, tweakListOptions, recorder).InitInformer()
 
 	if err := ctrl.EnsureCustomResourceDefinitions(); err != nil {
 		return nil, err

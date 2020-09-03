@@ -111,7 +111,7 @@ func (c *Controller) create(redis *api.Redis) error {
 	}
 
 	if _, err := meta_util.GetString(redis.Annotations, api.AnnotationInitialized); err == kutil.ErrNotFound &&
-		redis.Spec.Init != nil && redis.Spec.Init.StashRestoreSession != nil {
+		redis.Spec.Init != nil && redis.Spec.Init.Stash != nil {
 
 		if redis.Status.Phase == api.DatabasePhaseInitializing {
 			return nil
@@ -128,7 +128,7 @@ func (c *Controller) create(redis *api.Redis) error {
 		redis.Status = rd.Status
 
 		init := redis.Spec.Init
-		if init.StashRestoreSession != nil {
+		if init.Stash != nil {
 			log.Debugf("Redis %v/%v is waiting for restoreSession to be succeeded", redis.Namespace, redis.Name)
 			return nil
 		}
