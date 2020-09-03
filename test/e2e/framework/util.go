@@ -24,22 +24,39 @@ import (
 	"time"
 
 	api "kubedb.dev/apimachinery/apis/kubedb/v1alpha1"
+	"kubedb.dev/apimachinery/apis/ops/v1alpha1"
+	opsapi "kubedb.dev/apimachinery/apis/ops/v1alpha1"
 
 	shell "github.com/codeskyblue/go-sh"
+	cm_api "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1alpha2"
+	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	core "k8s.io/api/core/v1"
 	kerr "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
+const (
+	updateRetryInterval = 10 * 1000 * 1000 * time.Nanosecond
+	maxAttempts         = 5
+	PullInterval        = time.Second * 2
+	WaitTimeOut         = time.Minute * 3
+)
+
+func deleteInBackground() *metav1.DeleteOptions {
+	policy := metav1.DeletePropagationBackground
+	return &metav1.DeleteOptions{PropagationPolicy: &policy}
+}
 func deleteInForeground() metav1.DeleteOptions {
 	policy := metav1.DeletePropagationForeground
 	return metav1.DeleteOptions{PropagationPolicy: &policy}
 }
 
 func (fi *Invocation) GetPod(meta metav1.ObjectMeta) (*core.Pod, error) {
-	podList, err := fi.kubeClient.CoreV1().Pods(meta.Namespace).List(context.TODO(), metav1.ListOptions{})
+	podList, err := fi.KubeClient.CoreV1().Pods(meta.Namespace).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -64,12 +81,12 @@ func (fi *Invocation) GetCustomConfig(configs []string) *core.ConfigMap {
 }
 
 func (fi *Invocation) CreateConfigMap(obj *core.ConfigMap) error {
-	_, err := fi.kubeClient.CoreV1().ConfigMaps(obj.Namespace).Create(context.TODO(), obj, metav1.CreateOptions{})
+	_, err := fi.KubeClient.CoreV1().ConfigMaps(obj.Namespace).Create(context.TODO(), obj, metav1.CreateOptions{})
 	return err
 }
 
 func (fi *Invocation) DeleteConfigMap(meta metav1.ObjectMeta) error {
-	err := fi.kubeClient.CoreV1().ConfigMaps(meta.Namespace).Delete(context.TODO(), meta.Name, deleteInForeground())
+	err := fi.KubeClient.CoreV1().ConfigMaps(meta.Namespace).Delete(context.TODO(), meta.Name, deleteInForeground())
 	if err != nil && !kerr.IsNotFound(err) {
 		return err
 	}
@@ -86,7 +103,7 @@ func (f *Framework) EventuallyWipedOut(meta metav1.ObjectMeta) GomegaAsyncAssert
 			labelSelector := labels.SelectorFromSet(labelMap)
 
 			// check if pvcs is wiped out
-			pvcList, err := f.kubeClient.CoreV1().PersistentVolumeClaims(meta.Namespace).List(
+			pvcList, err := f.KubeClient.CoreV1().PersistentVolumeClaims(meta.Namespace).List(
 				context.TODO(),
 				metav1.ListOptions{
 					LabelSelector: labelSelector.String(),
@@ -100,7 +117,7 @@ func (f *Framework) EventuallyWipedOut(meta metav1.ObjectMeta) GomegaAsyncAssert
 			}
 
 			// check if secrets are wiped out
-			secretList, err := f.kubeClient.CoreV1().Secrets(meta.Namespace).List(
+			secretList, err := f.KubeClient.CoreV1().Secrets(meta.Namespace).List(
 				context.TODO(),
 				metav1.ListOptions{
 					LabelSelector: labelSelector.String(),
@@ -132,6 +149,84 @@ func (f *Framework) EventuallyWipedOut(meta metav1.ObjectMeta) GomegaAsyncAssert
 		time.Minute*5,
 		time.Second*5,
 	)
+}
+func (fi *Invocation) AppendToCleanupList(resources ...interface{}) {
+
+	for r := range resources {
+		//fmt.Println(resources[0])
+		fi.TestResources = append(fi.TestResources, resources[r])
+	}
+}
+
+func (fi *Invocation) CleanupTestResources() error {
+	// delete all test resources
+	By("Cleaning Test Resources")
+	if fi.TestResources == nil {
+
+		return nil
+	}
+	for r := range fi.TestResources {
+		gvr, objMeta, err := getGVRAndObjectMeta(fi.TestResources[r])
+		if err != nil {
+			return err
+		}
+
+		err = fi.dmClient.Resource(gvr).Namespace(objMeta.Namespace).Delete(context.TODO(), objMeta.Name, *deleteInBackground())
+
+		if err != nil && !kerr.IsNotFound(err) {
+			return err
+		}
+	}
+
+	// wait until resource has been deleted
+	for r := range fi.TestResources {
+		gvr, objMeta, err := getGVRAndObjectMeta(fi.TestResources[r])
+		if err != nil {
+			return err
+		}
+		err = fi.waitUntilResourceDeleted(gvr, objMeta)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (f *Framework) waitUntilResourceDeleted(gvr schema.GroupVersionResource, objMeta metav1.ObjectMeta) error {
+	return wait.PollImmediate(PullInterval, WaitTimeOut, func() (done bool, err error) {
+		if _, err := f.dmClient.Resource(gvr).Namespace(objMeta.Namespace).Get(context.TODO(), objMeta.Name, metav1.GetOptions{}); err != nil {
+			if kerr.IsNotFound(err) {
+				return true, nil
+			} else {
+				return true, err
+			}
+		}
+		return false, nil
+	})
+}
+
+func getGVRAndObjectMeta(obj interface{}) (schema.GroupVersionResource, metav1.ObjectMeta, error) {
+	switch w := obj.(type) {
+	case *api.Redis:
+		w.GetObjectKind().SetGroupVersionKind(api.SchemeGroupVersion.WithKind(api.ResourceKindRedis))
+		gvk := w.GroupVersionKind()
+		return schema.GroupVersionResource{Group: gvk.Group, Version: gvk.Version, Resource: api.ResourceKindRedis}, w.ObjectMeta, nil
+	case *v1alpha1.RedisOpsRequest:
+		w.GetObjectKind().SetGroupVersionKind(opsapi.SchemeGroupVersion.WithKind(opsapi.ResourceKindRedisOpsRequest))
+		gvk := w.GroupVersionKind()
+		return schema.GroupVersionResource{Group: gvk.Group, Version: gvk.Version, Resource: opsapi.ResourcePluralRedisOpsRequest}, w.ObjectMeta, nil
+	case *core.Secret:
+		w.GetObjectKind().SetGroupVersionKind(core.SchemeGroupVersion.WithKind("Secret"))
+		gvk := w.GroupVersionKind()
+		return schema.GroupVersionResource{Group: gvk.Group, Version: gvk.Version, Resource: "secrets"}, w.ObjectMeta, nil
+	case *cm_api.Issuer:
+		w.GetObjectKind().SetGroupVersionKind(cm_api.SchemeGroupVersion.WithKind(cm_api.IssuerKind))
+		gvk := w.GroupVersionKind()
+		return schema.GroupVersionResource{Group: gvk.Group, Version: gvk.Version, Resource: "issuers"}, w.ObjectMeta, nil
+	default:
+		return schema.GroupVersionResource{}, metav1.ObjectMeta{}, fmt.Errorf("failed to get GroupVersionResource. Reason: Unknown resource type")
+	}
 }
 
 func (f *Framework) PrintDebugHelpers() {

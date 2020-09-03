@@ -27,14 +27,15 @@ import (
 
 	"github.com/appscode/go/crypto/rand"
 	"github.com/appscode/go/types"
+	cm_api "github.com/jetstack/cert-manager/pkg/apis/certmanager/v1alpha2"
 	. "github.com/onsi/gomega"
-	apps "k8s.io/api/apps/v1"
 	core "k8s.io/api/core/v1"
 	policy "k8s.io/api/policy/v1beta1"
 	kerr "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	kmapi "kmodules.xyz/client-go/api/v1"
 	meta_util "kmodules.xyz/client-go/meta"
 )
 
@@ -52,10 +53,7 @@ func (fi *Invocation) Redis() *api.Redis {
 			},
 		},
 		Spec: api.RedisSpec{
-			Version: DBCatalogName,
-			UpdateStrategy: apps.StatefulSetUpdateStrategy{
-				Type: apps.RollingUpdateStatefulSetStrategyType,
-			},
+			Version:           DBCatalogName,
 			TerminationPolicy: api.TerminationPolicyHalt,
 			Storage: &core.PersistentVolumeClaimSpec{
 				Resources: core.ResourceRequirements{
@@ -76,7 +74,40 @@ func (fi *Invocation) RedisCluster() *api.Redis {
 		Master:   types.Int32P(3),
 		Replicas: types.Int32P(1),
 	}
+	if WithTLSConfig {
+		redis = fi.RedisWithTLS(redis)
+	}
 
+	return redis
+}
+
+func (f *Invocation) RedisWithTLS(redis *api.Redis) *api.Redis {
+	issuer, err := f.InsureIssuer(redis.ObjectMeta, api.ResourceKindRedis)
+	Expect(err).NotTo(HaveOccurred())
+	if redis.Spec.TLS == nil {
+		redis.Spec.TLS = &kmapi.TLSConfig{
+			IssuerRef: &core.TypedLocalObjectReference{
+				Name:     issuer.Name,
+				Kind:     "Issuer",
+				APIGroup: types.StringP(cm_api.SchemeGroupVersion.Group), //cert-manger.io
+			},
+			Certificates: []kmapi.CertificateSpec{
+				{
+					Subject: &kmapi.X509Subject{
+						Organizations: []string{
+							"kubedb:server",
+						},
+					},
+					DNSNames: []string{
+						"localhost",
+					},
+					IPAddresses: []string{
+						"127.0.0.1",
+					},
+				},
+			},
+		}
+	}
 	return redis
 }
 
@@ -171,7 +202,7 @@ func (f *Framework) EvictPodsFromStatefulSet(meta metav1.ObjectMeta) error {
 	}
 
 	// get sts in the namespace
-	stsList, err := f.kubeClient.AppsV1().StatefulSets(meta.Namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: labelSelector.String()})
+	stsList, err := f.KubeClient.AppsV1().StatefulSets(meta.Namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: labelSelector.String()})
 	if err != nil {
 		return err
 	}
@@ -183,7 +214,7 @@ func (f *Framework) EvictPodsFromStatefulSet(meta metav1.ObjectMeta) error {
 	for _, sts := range stsList.Items {
 		// if PDB is not found, send error
 		var pdb *policy.PodDisruptionBudget
-		pdb, err = f.kubeClient.PolicyV1beta1().PodDisruptionBudgets(sts.Namespace).Get(context.TODO(), sts.Name, metav1.GetOptions{})
+		pdb, err = f.KubeClient.PolicyV1beta1().PodDisruptionBudgets(sts.Namespace).Get(context.TODO(), sts.Name, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
@@ -209,7 +240,7 @@ func (f *Framework) EvictPodsFromStatefulSet(meta metav1.ObjectMeta) error {
 		for i := 0; i < maxUnavailable; i++ {
 			eviction.Name = sts.Name + "-" + strconv.Itoa(i)
 
-			err := f.kubeClient.PolicyV1beta1().Evictions(eviction.Namespace).Evict(context.TODO(), eviction)
+			err := f.KubeClient.PolicyV1beta1().Evictions(eviction.Namespace).Evict(context.TODO(), eviction)
 			if err != nil {
 				return err
 			}
@@ -218,7 +249,7 @@ func (f *Framework) EvictPodsFromStatefulSet(meta metav1.ObjectMeta) error {
 		// try to evict one extra pod. TooManyRequests err should occur
 		eviction.Name = sts.Name + "-" + strconv.Itoa(maxUnavailable-1)
 
-		err = f.kubeClient.PolicyV1beta1().Evictions(eviction.Namespace).Evict(context.TODO(), eviction)
+		err = f.KubeClient.PolicyV1beta1().Evictions(eviction.Namespace).Evict(context.TODO(), eviction)
 		if kerr.IsTooManyRequests(err) {
 			err = nil
 		} else if err != nil {

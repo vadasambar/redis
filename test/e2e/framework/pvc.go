@@ -36,7 +36,7 @@ func (f *Framework) EventuallyPVCCount(meta metav1.ObjectMeta) GomegaAsyncAssert
 
 	return Eventually(
 		func() int {
-			pvcList, err := f.kubeClient.CoreV1().PersistentVolumeClaims(meta.Namespace).List(
+			pvcList, err := f.KubeClient.CoreV1().PersistentVolumeClaims(meta.Namespace).List(
 				context.TODO(),
 				metav1.ListOptions{
 					LabelSelector: labelSelector.String(),

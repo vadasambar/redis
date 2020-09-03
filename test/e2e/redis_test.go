@@ -51,6 +51,9 @@ var _ = Describe("Redis", func() {
 	BeforeEach(func() {
 		f = root.Invoke()
 		redis = f.Redis()
+		if framework.WithTLSConfig {
+			redis = f.RedisWithTLS(redis)
+		}
 		skipMessage = ""
 		key = rand.WithUniqSuffix("kubed-e2e")
 		value = rand.GenerateTokenWithLength(10)
@@ -64,6 +67,10 @@ var _ = Describe("Redis", func() {
 
 	var createAndWaitForRunning = func() {
 		By("Create Redis: " + redis.Name)
+		if redis.Spec.Mode != api.RedisModeCluster {
+
+			redis.Spec.Mode = api.RedisModeStandalone
+		}
 		err = f.CreateRedis(redis)
 		Expect(err).NotTo(HaveOccurred())
 
@@ -119,6 +126,9 @@ var _ = Describe("Redis", func() {
 	}
 
 	AfterEach(func() {
+
+		err = f.CleanupTestResources()
+		Expect(err).NotTo(HaveOccurred())
 		deleteTestResource()
 	})
 
@@ -129,12 +139,15 @@ var _ = Describe("Redis", func() {
 
 		// Create Redis
 		createAndWaitForRunning()
+		res, err := f.TestConfig().GetPingResult(redis)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(Equal("PONG"))
 
 		By("Inserting item into database")
-		f.EventuallySetItem(redis.ObjectMeta, key, value).Should(BeTrue())
+		f.EventuallySetItem(redis, key, value).Should(BeTrue())
 
 		By("Retrieving item from database")
-		f.EventuallyGetItem(redis.ObjectMeta, key).Should(BeEquivalentTo(value))
+		f.EventuallyGetItem(redis, key).Should(BeEquivalentTo(value))
 	}
 
 	Describe("Test", func() {
@@ -162,7 +175,7 @@ var _ = Describe("Redis", func() {
 					f.EventuallyRedisRunning(redis.ObjectMeta).Should(BeTrue())
 
 					By("Retrieving item from database")
-					f.EventuallyGetItem(redis.ObjectMeta, key).Should(BeEquivalentTo(value))
+					f.EventuallyGetItem(redis, key).Should(BeEquivalentTo(value))
 
 				})
 			})
@@ -333,7 +346,7 @@ var _ = Describe("Redis", func() {
 					f.EventuallyRedisRunning(redis.ObjectMeta).Should(BeTrue())
 
 					By("Retrieving item from database")
-					f.EventuallyGetItem(redis.ObjectMeta, key).Should(BeEquivalentTo(value))
+					f.EventuallyGetItem(redis, key).Should(BeEquivalentTo(value))
 				})
 			})
 
@@ -360,7 +373,7 @@ var _ = Describe("Redis", func() {
 						f.EventuallyRedisRunning(redis.ObjectMeta).Should(BeTrue())
 
 						By("Retrieving item from database")
-						f.EventuallyGetItem(redis.ObjectMeta, key).Should(BeEquivalentTo(value))
+						f.EventuallyGetItem(redis, key).Should(BeEquivalentTo(value))
 					}
 				})
 			})
@@ -437,7 +450,7 @@ var _ = Describe("Redis", func() {
 					f.EventuallyRedisRunning(redis.ObjectMeta).Should(BeTrue())
 
 					By("Retrieving item from database")
-					f.EventuallyGetItem(redis.ObjectMeta, key).Should(BeEquivalentTo(value))
+					f.EventuallyGetItem(redis, key).Should(BeEquivalentTo(value))
 
 				}
 
@@ -585,7 +598,7 @@ var _ = Describe("Redis", func() {
 
 					By("Checking redis configured from provided custom configuration")
 					for _, cfg := range customConfigs {
-						f.EventuallyRedisConfig(redis.ObjectMeta, cfg).Should(matcher.UseCustomConfig(cfg))
+						f.EventuallyRedisConfig(redis, cfg).Should(matcher.UseCustomConfig(cfg))
 					}
 				})
 			})
@@ -604,10 +617,10 @@ var _ = Describe("Redis", func() {
 				createAndWaitForRunning()
 
 				By("Inserting item into database")
-				f.EventuallySetItem(redis.ObjectMeta, key, value).Should(BeTrue())
+				f.EventuallySetItem(redis, key, value).Should(BeTrue())
 
 				By("Retrieving item from database")
-				f.EventuallyGetItem(redis.ObjectMeta, key).Should(BeEquivalentTo(value))
+				f.EventuallyGetItem(redis, key).Should(BeEquivalentTo(value))
 			}
 
 			Context("Ephemeral", func() {

@@ -120,16 +120,16 @@ func (fi *Invocation) RoleBinding(saName string, roleName string) *rbac.RoleBind
 }
 
 func (f *Framework) CreateServiceAccount(obj *core.ServiceAccount) error {
-	_, err := f.kubeClient.CoreV1().ServiceAccounts(obj.Namespace).Create(context.TODO(), obj, metav1.CreateOptions{})
+	_, err := f.KubeClient.CoreV1().ServiceAccounts(obj.Namespace).Create(context.TODO(), obj, metav1.CreateOptions{})
 	return err
 }
 
 func (f *Framework) CreateRole(obj *rbac.Role) error {
-	_, err := f.kubeClient.RbacV1().Roles(obj.Namespace).Create(context.TODO(), obj, metav1.CreateOptions{})
+	_, err := f.KubeClient.RbacV1().Roles(obj.Namespace).Create(context.TODO(), obj, metav1.CreateOptions{})
 	return err
 }
 
 func (f *Framework) CreateRoleBinding(obj *rbac.RoleBinding) error {
-	_, err := f.kubeClient.RbacV1().RoleBindings(obj.Namespace).Create(context.TODO(), obj, metav1.CreateOptions{})
+	_, err := f.KubeClient.RbacV1().RoleBindings(obj.Namespace).Create(context.TODO(), obj, metav1.CreateOptions{})
 	return err
 }

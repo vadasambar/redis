@@ -22,14 +22,17 @@ import (
 	"time"
 
 	api "kubedb.dev/apimachinery/apis/kubedb/v1alpha1"
+	test_util "kubedb.dev/redis/pkg/testing"
+
+	// test_util "kubedb.dev/redis/pkg/testing"
 	"kubedb.dev/redis/test/e2e/framework"
 
+	"github.com/appscode/go/sets"
 	"github.com/appscode/go/types"
-	rd "github.com/go-redis/redis"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	kerr "k8s.io/apimachinery/pkg/api/errors"
-	"kmodules.xyz/client-go/tools/portforward"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 var createAndWaitForRunning = func() {
@@ -41,6 +44,7 @@ var createAndWaitForRunning = func() {
 	cl.f.EventuallyRedisRunning(cl.redis.ObjectMeta).Should(BeTrue())
 }
 
+//
 var deleteTestResource = func() {
 	By("Check if Redis " + cl.redis.Name + " exists.")
 	rd, err := cl.f.GetRedis(cl.redis.ObjectMeta)
@@ -72,14 +76,16 @@ var deleteTestResource = func() {
 	By("Wait for redis to be deleted")
 	cl.f.EventuallyRedis(cl.redis.ObjectMeta).Should(BeFalse())
 
-	By("Wait for redis resources to be wipedOut")
+	By("Wait for redis resources to be wipedOut cluster")
 	cl.f.EventuallyWipedOut(cl.redis.ObjectMeta).Should(Succeed())
 }
 
 var _ = Describe("Redis Cluster", func() {
+
 	BeforeEach(func() {
 		if !framework.Cluster {
 			Skip("cluster test is disabled")
+
 		}
 	})
 
@@ -87,36 +93,42 @@ var _ = Describe("Redis Cluster", func() {
 		err                  error
 		skipMessage          string
 		failover             bool
-		opt                  *rd.ClusterOptions
-		client               *rd.ClusterClient
-		cluster              *framework.ClusterScenario
-		ports                [][]string
-		tunnels              [][]*portforward.Tunnel
-		nodes                [][]framework.RedisNode
-		rdClients            [][]*rd.Client
-		expectedClusterSlots []rd.ClusterSlot
+		cluster              *test_util.ClusterNodes
+		nodes                [][]*test_util.RedisNode
+		expectedClusterSlots []test_util.ClusterSlot
 	)
 
-	var clusterSlots = func() ([]rd.ClusterSlot, error) { //nolint:unparam
-		var slots []rd.ClusterSlot
-		for i := range nodes {
-			for k := range nodes[i][0].SlotStart {
-				slot := rd.ClusterSlot{
-					Start: nodes[i][0].SlotStart[k],
-					End:   nodes[i][0].SlotEnd[k],
-					Nodes: make([]rd.ClusterNode, len(nodes[i])),
-				}
-				for j := 0; j < len(nodes[i]); j++ {
-					slot.Nodes[j] = rd.ClusterNode{
-						Addr: ":" + nodes[i][j].Port,
-					}
-				}
+	var waitUntilConfiguredRedisCluster = func() error {
+		var (
+			err   error
+			slots []test_util.ClusterSlot
+		)
 
-				slots = append(slots, slot)
+		err = wait.PollImmediate(time.Second*5, time.Minute*2, func() (bool, error) {
+			slots, err = cl.f.TestConfig().GetClusterSlots(cl.redis)
+			if err != nil {
+				return false, nil
 			}
-		}
 
-		return slots, nil
+			total := 0
+			masterIds := sets.NewString()
+			checkReplicas := true
+			for _, slot := range slots {
+				total += slot.End - slot.Start + 1
+				masterIds.Insert(slot.Nodes[0].Id)
+				checkReplicas = checkReplicas && (len(slot.Nodes)-1 == int(*cl.redis.Spec.Cluster.Replicas))
+			}
+
+			if total != 16384 || masterIds.Len() != int(*cl.redis.Spec.Cluster.Master) || !checkReplicas {
+
+				return false, nil
+			}
+
+			return true, nil
+
+		})
+		return err
+
 	}
 
 	var getConfiguredClusterInfo = func() {
@@ -125,45 +137,17 @@ var _ = Describe("Redis Cluster", func() {
 			skipMessage = "cluster test is disabled"
 		}
 
-		By("Forward ports")
-		ports, tunnels, err = cl.f.GetPodsIPWithTunnel(cl.redis)
-		Expect(err).NotTo(HaveOccurred())
-
 		By("Wait until redis cluster be configured")
-		Expect(cl.f.WaitUntilRedisClusterConfigured(cl.redis, ports[0][0])).NotTo(HaveOccurred())
+		Expect(waitUntilConfiguredRedisCluster()).NotTo(HaveOccurred())
 
 		By("Get configured cluster info")
-		//cluster = framework.Sync(ports, cl.redis)
-		nodes, rdClients = framework.Sync(ports, cl.redis)
-		cluster = &framework.ClusterScenario{
-			Nodes:   nodes,
-			Clients: rdClients,
-		}
-	}
-
-	var closeExistingTunnels = func() {
-		By("closing tunnels")
-		for i := range tunnels {
-			for j := range tunnels[i] {
-				tunnels[i][j].Close()
-			}
-		}
-	}
-
-	var createAndInitializeClusterClient = func() {
-		By(fmt.Sprintf("Creating cluster client using ports %v", ports))
-		opt = &rd.ClusterOptions{
-			ClusterSlots:  clusterSlots,
-			RouteRandomly: true,
-		}
-		client = cluster.ClusterClient(opt)
-		Expect(client.ReloadState()).NotTo(HaveOccurred())
-
-		By("Initializing cluster client")
-		err := client.ForEachMaster(func(master *rd.Client) error {
-			return master.FlushDB().Err()
-		})
+		nodes, err = cl.f.TestConfig().GetClusterNodesForCluster(cl.redis)
 		Expect(err).NotTo(HaveOccurred())
+
+		cluster = &test_util.ClusterNodes{
+			Nodes: nodes,
+		}
+
 	}
 
 	var assertSimple = func() {
@@ -173,63 +157,33 @@ var _ = Describe("Redis Cluster", func() {
 			}
 
 			if !failover {
-				res := client.Get("A").Val()
+				res, err := cl.f.TestConfig().GetItem(cl.redis, "A")
+				Expect(err).NotTo(HaveOccurred())
 				Expect(res).To(Equal(""))
-				err = client.Set("A", "VALUE", 0).Err()
+				_, err = cl.f.TestConfig().SetItem(cl.redis, "A", "VALUE")
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			Eventually(func() string {
-				return client.Get("A").Val()
-			}, 30*time.Second).Should(Equal("VALUE"))
-		})
-	}
-
-	var assertPubSub = func() {
-		It("supports PubSub", func() {
-			if skipMessage != "" {
-				Skip(skipMessage)
-			}
-
-			pubsub := client.Subscribe("mychannel")
-			defer pubsub.Close()
-
-			Eventually(func() error {
-				_, err := client.Publish("mychannel", "hello").Result()
-				if err != nil {
-					return err
-				}
-
-				msg, err := pubsub.ReceiveTimeout(time.Second)
-				if err != nil {
-					return err
-				}
-
-				_, ok := msg.(*rd.Message)
-				if !ok {
-					return fmt.Errorf("got %T, wanted *redis.Message", msg)
-				}
-
-				return nil
-			}, 30*time.Second).ShouldNot(HaveOccurred())
+			res, err := cl.f.TestConfig().GetItem(cl.redis, "A")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal("VALUE"))
 		})
 	}
 
 	Context("Cluster Commands", func() {
 		BeforeEach(func() {
 			getConfiguredClusterInfo()
-			createAndInitializeClusterClient()
 		})
 
 		AfterEach(func() {
-			err = client.ForEachMaster(func(master *rd.Client) error {
-				return master.FlushDB().Err()
-			})
-			Expect(err).NotTo(HaveOccurred())
 
-			Expect(client.Close()).NotTo(HaveOccurred())
+			if framework.Cluster {
+				_, err := cl.f.TestConfig().FlushDBForCluster(cl.redis)
+				Expect(err).NotTo(HaveOccurred())
+				err = cl.f.CleanupTestResources()
+				Expect(err).NotTo(HaveOccurred())
+			}
 
-			closeExistingTunnels()
 		})
 
 		It("should CLUSTER INFO", func() {
@@ -237,10 +191,15 @@ var _ = Describe("Redis Cluster", func() {
 				Skip(skipMessage)
 			}
 
-			res, err := client.ClusterInfo().Result()
+			res, err := cl.f.TestConfig().GetClusterInfoForRedis(cl.redis)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(ContainSubstring(fmt.Sprintf("cluster_known_nodes:%d",
 				(*cl.redis.Spec.Cluster.Master)*((*cl.redis.Spec.Cluster.Replicas)+1))))
+
+			for i := 0; i < 10; i++ {
+				_, err := cl.f.TestConfig().SetItem(cl.redis, fmt.Sprintf("%d", i), "")
+				Expect(err).NotTo(HaveOccurred())
+			}
 		})
 
 		It("calls fn for every master node", func() {
@@ -249,15 +208,15 @@ var _ = Describe("Redis Cluster", func() {
 			}
 
 			for i := 0; i < 10; i++ {
-				Expect(client.Set(strconv.Itoa(i), "", 0).Err()).NotTo(HaveOccurred())
+				res, err := cl.f.TestConfig().SetItem(cl.redis, strconv.Itoa(i), "")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal("OK"))
 			}
 
-			err := client.ForEachMaster(func(master *rd.Client) error {
-				return master.FlushDB().Err()
-			})
+			_, err := cl.f.TestConfig().FlushDBForCluster(cl.redis)
 			Expect(err).NotTo(HaveOccurred())
 
-			size, err := client.DBSize().Result()
+			size, err := cl.f.TestConfig().GetDbSizeForCluster(cl.redis)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(size).To(Equal(int64(0)))
 		})
@@ -267,11 +226,11 @@ var _ = Describe("Redis Cluster", func() {
 				Skip(skipMessage)
 			}
 
-			res, err := client.ClusterSlots().Result()
+			slots, err := cl.f.TestConfig().GetClusterSlots(cl.redis)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res).To(HaveLen(3))
+			Expect(slots).To(HaveLen(3))
 
-			wanted := []rd.ClusterSlot{
+			wanted := []test_util.ClusterSlot{
 				{
 					Start: 0,
 					End:   5460,
@@ -287,7 +246,7 @@ var _ = Describe("Redis Cluster", func() {
 				},
 			}
 
-			Expect(framework.AssertSlotsEqual(res, wanted)).NotTo(HaveOccurred())
+			Expect(cl.f.TestConfig().AssertSlotsEqual(slots, wanted)).NotTo(HaveOccurred())
 		})
 
 		It("should CLUSTER NODES", func() {
@@ -295,7 +254,7 @@ var _ = Describe("Redis Cluster", func() {
 				Skip(skipMessage)
 			}
 
-			res, err := client.ClusterNodes().Result()
+			res, err := cl.f.TestConfig().GetClusterNodes(cl.redis, 0, 0)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(res)).To(BeNumerically(">", 400))
 		})
@@ -305,7 +264,7 @@ var _ = Describe("Redis Cluster", func() {
 				Skip(skipMessage)
 			}
 
-			n, err := client.ClusterCountFailureReports(cluster.Nodes[0][0].ID).Result()
+			n, err := cl.f.TestConfig().GetClusterCountFailureReports(cl.redis, cluster.Nodes[0][0].ID)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(0)))
 		})
@@ -315,9 +274,9 @@ var _ = Describe("Redis Cluster", func() {
 				Skip(skipMessage)
 			}
 
-			n, err := client.ClusterCountKeysInSlot(10).Result()
+			res, err := cl.f.TestConfig().GetClusterCountKeysInSlot(cl.redis, 10)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(n).To(Equal(int64(0)))
+			Expect(res).To(Equal(int64(0)))
 		})
 
 		It("should CLUSTER SAVECONFIG", func() {
@@ -325,7 +284,7 @@ var _ = Describe("Redis Cluster", func() {
 				Skip(skipMessage)
 			}
 
-			res, err := client.ClusterSaveConfig().Result()
+			res, err := cl.f.TestConfig().GetClusterSaveConfig(cl.redis)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal("OK"))
 		})
@@ -335,12 +294,12 @@ var _ = Describe("Redis Cluster", func() {
 				Skip(skipMessage)
 			}
 
-			for i := range nodes {
+			for i := 0; i < len(nodes); i++ {
 				if nodes[i][0].Role == "master" {
-					nodesList, err := client.ClusterSlaves(cluster.Nodes[i][0].ID).Result()
+					slaveList, err := cl.f.TestConfig().GetClusterSlaves(cl.redis, cluster.Nodes[i][0].ID)
 					Expect(err).NotTo(HaveOccurred())
-					Expect(nodesList).Should(ContainElement(ContainSubstring("slave")))
-					Expect(nodesList).Should(HaveLen(1))
+					Expect(slaveList).Should(ContainElement(ContainSubstring("slave")))
+					Expect(slaveList).Should(HaveLen(1))
 					break
 				}
 			}
@@ -354,7 +313,7 @@ var _ = Describe("Redis Cluster", func() {
 			const nkeys = 100
 
 			for i := 0; i < nkeys; i++ {
-				err := client.Set(fmt.Sprintf("key%d", i), "value", 0).Err()
+				_, err := cl.f.TestConfig().SetItem(cl.redis, fmt.Sprintf("key%d", i), "value")
 				Expect(err).NotTo(HaveOccurred())
 			}
 
@@ -369,7 +328,8 @@ var _ = Describe("Redis Cluster", func() {
 			}
 
 			for i := 0; i < nkeys*10; i++ {
-				key := client.RandomKey().Val()
+				key, err := cl.f.TestConfig().GetRandomKey(cl.redis)
+				Expect(err).NotTo(HaveOccurred())
 				addKey(key)
 			}
 
@@ -377,7 +337,7 @@ var _ = Describe("Redis Cluster", func() {
 		})
 
 		assertSimple()
-		assertPubSub()
+		//assertPubSub()
 	})
 
 	Context("Cluster failover", func() {
@@ -385,47 +345,53 @@ var _ = Describe("Redis Cluster", func() {
 			failover = true
 
 			getConfiguredClusterInfo()
-			createAndInitializeClusterClient()
 
-			err = client.ForEachSlave(func(slave *rd.Client) error {
-				defer GinkgoRecover()
+			for i := 0; i < int(*cl.redis.Spec.Cluster.Master); i++ {
+				for j := 0; j <= int(*cl.redis.Spec.Cluster.Replicas); j++ {
+					if nodes[i][j].Role == "slave" {
+						res, err := cl.f.TestConfig().GetDbSizeForIndividualNodeInCluster(cl.redis, i, j)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(res).Should(Equal(int64(0)))
 
-				Eventually(func() int64 {
-					return slave.DBSize().Val()
-				}, "30s").Should(Equal(int64(0)))
+					}
+				}
+			}
 
-				return nil
-			})
+			_, err = cl.f.TestConfig().SetItem(cl.redis, "A", "VALUE")
 			Expect(err).NotTo(HaveOccurred())
 
-			err = client.Set("A", "VALUE", 0).Err()
+			slots, err := cl.f.TestConfig().GetClusterSlots(cl.redis)
 			Expect(err).NotTo(HaveOccurred())
+			totalSlots := test_util.AvailableClusterSlots(slots)
+			Expect(totalSlots).To(Equal(16384))
 
-			err = client.ReloadState()
-			Eventually(func() bool {
-				return client.ReloadState() == nil
-			}, "30s").Should(BeTrue())
+			for i := 0; i < int(*cl.redis.Spec.Cluster.Master); i++ {
+				for j := 0; j <= int(*cl.redis.Spec.Cluster.Replicas); j++ {
+					if nodes[i][j].Role == "slave" {
+						res, err := cl.f.TestConfig().ClusterFailOver(cl.redis, i, j)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(res).To(Equal("OK"))
+						time.Sleep(time.Second * 7)
 
-			err = client.ForEachSlave(func(slave *rd.Client) error {
-				err = slave.ClusterFailover().Err()
-				Expect(err).NotTo(HaveOccurred())
-				time.Sleep(time.Second * 5)
+						slots, err := cl.f.TestConfig().GetClusterSlots(cl.redis)
+						Expect(err).NotTo(HaveOccurred())
 
-				Eventually(func() bool {
-					return client.ReloadState() == nil
-				}, "30s").Should(BeTrue())
+						totalSlots := test_util.AvailableClusterSlots(slots)
+						Expect(totalSlots).To(Equal(16384))
 
-				return nil
-			})
-			Expect(err).NotTo(HaveOccurred())
+						break
+					}
+				}
+			}
+
 		})
 
 		AfterEach(func() {
 			failover = false
 
-			Expect(client.Close()).NotTo(HaveOccurred())
+			err = cl.f.CleanupTestResources()
+			Expect(err).NotTo(HaveOccurred())
 
-			closeExistingTunnels()
 		})
 
 		assertSimple()
@@ -448,10 +414,12 @@ var _ = Describe("Redis Cluster", func() {
 			Expect(cl.f.WaitUntilStatefulSetReady(cl.redis)).NotTo(HaveOccurred())
 
 			getConfiguredClusterInfo()
-			createAndInitializeClusterClient()
+			time.Sleep(time.Minute)
+			cluster.Nodes, err = cl.f.TestConfig().GetClusterNodesForCluster(cl.redis)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("cluster slots should be configured as expected")
-			expectedClusterSlots = []rd.ClusterSlot{
+			expectedClusterSlots = []test_util.ClusterSlot{
 				{
 					Start: 0,
 					End:   5460,
@@ -466,15 +434,13 @@ var _ = Describe("Redis Cluster", func() {
 					Nodes: cluster.ClusterNodes(10923, 16383),
 				},
 			}
-			Eventually(func() error {
-				res, err := client.ClusterSlots().Result()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(res).To(HaveLen(3))
 
-				return framework.AssertSlotsEqual(res, expectedClusterSlots)
-			}, time.Minute*5, time.Second).ShouldNot(HaveOccurred())
+			res, err := cl.f.TestConfig().GetClusterSlots(cl.redis)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(HaveLen(3))
+			err = cl.f.TestConfig().AssertSlotsEqual(res, expectedClusterSlots)
 
-			closeExistingTunnels()
+			Expect(err).ShouldNot(HaveOccurred())
 
 			// =======================================
 
@@ -487,12 +453,14 @@ var _ = Describe("Redis Cluster", func() {
 
 			By("Wait until statefulsets are ready")
 			Expect(cl.f.WaitUntilStatefulSetReady(cl.redis)).NotTo(HaveOccurred())
-
 			getConfiguredClusterInfo()
-			createAndInitializeClusterClient()
+
+			time.Sleep(time.Minute)
+			cluster.Nodes, err = cl.f.TestConfig().GetClusterNodesForCluster(cl.redis)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("cluster slots should be configured as expected")
-			expectedClusterSlots = []rd.ClusterSlot{
+			expectedClusterSlots = []test_util.ClusterSlot{
 				{
 					Start: 0,
 					End:   5460,
@@ -507,15 +475,11 @@ var _ = Describe("Redis Cluster", func() {
 					Nodes: cluster.ClusterNodes(10923, 16383),
 				},
 			}
-			Eventually(func() error {
-				res, err := client.ClusterSlots().Result()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(res).To(HaveLen(3))
-
-				return framework.AssertSlotsEqual(res, expectedClusterSlots)
-			}, time.Minute*5, time.Second).ShouldNot(HaveOccurred())
-
-			closeExistingTunnels()
+			res, err = cl.f.TestConfig().GetClusterSlots(cl.redis)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(HaveLen(3))
+			err = cl.f.TestConfig().AssertSlotsEqual(res, expectedClusterSlots)
+			Expect(err).ShouldNot(HaveOccurred())
 
 			// =======================================
 
@@ -528,12 +492,14 @@ var _ = Describe("Redis Cluster", func() {
 
 			By("Wait until statefulsets are ready")
 			Expect(cl.f.WaitUntilStatefulSetReady(cl.redis)).NotTo(HaveOccurred())
-
 			getConfiguredClusterInfo()
-			createAndInitializeClusterClient()
+
+			time.Sleep(time.Minute)
+			cluster.Nodes, err = cl.f.TestConfig().GetClusterNodesForCluster(cl.redis)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("cluster slots should be configured as expected")
-			expectedClusterSlots = []rd.ClusterSlot{
+			expectedClusterSlots = []test_util.ClusterSlot{
 				{
 					Start: 1365,
 					End:   5460,
@@ -560,15 +526,11 @@ var _ = Describe("Redis Cluster", func() {
 					Nodes: cluster.ClusterNodes(10923, 12287),
 				},
 			}
-			Eventually(func() error {
-				res, err := client.ClusterSlots().Result()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(res).To(HaveLen(6))
-
-				return framework.AssertSlotsEqual(res, expectedClusterSlots)
-			}, time.Minute*10, time.Second).ShouldNot(HaveOccurred())
-
-			closeExistingTunnels()
+			res, err = cl.f.TestConfig().GetClusterSlots(cl.redis)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(HaveLen(6))
+			err = cl.f.TestConfig().AssertSlotsEqual(res, expectedClusterSlots)
+			Expect(err).ShouldNot(HaveOccurred())
 
 			// =======================================
 
@@ -583,10 +545,12 @@ var _ = Describe("Redis Cluster", func() {
 			Expect(cl.f.WaitUntilStatefulSetReady(cl.redis)).NotTo(HaveOccurred())
 
 			getConfiguredClusterInfo()
-			createAndInitializeClusterClient()
+			time.Sleep(time.Minute)
+			cluster.Nodes, err = cl.f.TestConfig().GetClusterNodesForCluster(cl.redis)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("cluster slots should be configured as expected")
-			expectedClusterSlots = []rd.ClusterSlot{
+			expectedClusterSlots = []test_util.ClusterSlot{
 				{
 					Start: 0,
 					End:   5460,
@@ -609,15 +573,12 @@ var _ = Describe("Redis Cluster", func() {
 					Nodes: cluster.ClusterNodes(10923, 16383),
 				},
 			}
-			Eventually(func() error {
-				res, err := client.ClusterSlots().Result()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(res).To(HaveLen(5))
+			res, err = cl.f.TestConfig().GetClusterSlots(cl.redis)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(HaveLen(5))
+			err = cl.f.TestConfig().AssertSlotsEqual(res, expectedClusterSlots)
+			Expect(err).ShouldNot(HaveOccurred())
 
-				return framework.AssertSlotsEqual(res, expectedClusterSlots)
-			}, time.Minute*10, time.Second).ShouldNot(HaveOccurred())
-
-			closeExistingTunnels()
 		})
 	})
 })

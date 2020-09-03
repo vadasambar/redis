@@ -29,10 +29,12 @@ import (
 	"kubedb.dev/redis/test/e2e/framework"
 
 	"github.com/appscode/go/log"
+	cm "github.com/jetstack/cert-manager/pkg/client/clientset/versioned"
 	. "github.com/onsi/ginkgo"
 	"github.com/onsi/ginkgo/reporters"
 	. "github.com/onsi/gomega"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	clientSetScheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -108,11 +110,14 @@ var _ = BeforeSuite(func() {
 	extClient := cs.NewForConfigOrDie(config)
 	kaClient := ka.NewForConfigOrDie(config)
 	appCatalogClient, err := appcat_cs.NewForConfig(config)
+	dmClient := dynamic.NewForConfigOrDie(config)
+	cerManagerClient := cm.NewForConfigOrDie(config)
 	if err != nil {
 		log.Fatalln(err)
 	}
+
 	// Framework
-	root = framework.New(config, kubeClient, extClient, kaClient, appCatalogClient, storageClass)
+	root = framework.New(config, kubeClient, extClient, kaClient, dmClient, appCatalogClient, cerManagerClient, storageClass)
 
 	// Create namespace
 	By("Using namespace " + root.Namespace())
@@ -120,13 +125,13 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	root.EventuallyCRD().Should(Succeed())
-
 	if framework.Cluster {
 		cl = clusterVar{}
 		cl.f = root.Invoke()
 		cl.redis = cl.f.RedisCluster()
 		createAndWaitForRunning()
 	}
+
 })
 
 var _ = AfterSuite(func() {
@@ -136,6 +141,9 @@ var _ = AfterSuite(func() {
 
 	By("Delete left over Redis objects")
 	root.CleanRedis()
+	//err := root.Invoke().CleanupTestResources()
+	//Expect(err).NotTo(HaveOccurred())
+
 	By("Delete Namespace")
 	err := root.DeleteNamespace()
 	Expect(err).NotTo(HaveOccurred())

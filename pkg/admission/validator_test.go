@@ -109,12 +109,12 @@ func TestRedisValidator_Admit(t *testing.T) {
 			}
 
 			response := validator.Admit(req)
-			if c.result == true {
+			if c.result {
 				if response.Allowed != true {
 					t.Errorf("expected: 'Allowed=true'. but got response: %v", response)
 				}
-			} else if c.result == false {
-				if response.Allowed == true || response.Result.Code == http.StatusInternalServerError {
+			} else {
+				if response.Allowed || response.Result.Code == http.StatusInternalServerError {
 					t.Errorf("expected: 'Allowed=false', but got response: %v", response)
 				}
 			}

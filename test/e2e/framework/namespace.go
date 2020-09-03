@@ -33,10 +33,10 @@ func (f *Framework) CreateNamespace() error {
 			Name: f.namespace,
 		},
 	}
-	_, err := f.kubeClient.CoreV1().Namespaces().Create(context.TODO(), obj, metav1.CreateOptions{})
+	_, err := f.KubeClient.CoreV1().Namespaces().Create(context.TODO(), obj, metav1.CreateOptions{})
 	return err
 }
 
 func (f *Framework) DeleteNamespace() error {
-	return f.kubeClient.CoreV1().Namespaces().Delete(context.TODO(), f.namespace, deleteInForeground())
+	return f.KubeClient.CoreV1().Namespaces().Delete(context.TODO(), f.namespace, deleteInForeground())
 }
