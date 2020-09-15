@@ -5,10 +5,7 @@ go 1.12
 require (
 	github.com/appscode/go v0.0.0-20200323182826-54e98e09185a
 	github.com/codeskyblue/go-sh v0.0.0-20190412065543-76bd3d59ff27
-	github.com/coreos/etcd v3.3.15+incompatible // indirect
 	github.com/coreos/prometheus-operator v0.39.0
-	github.com/golang/groupcache v0.0.0-20200121045136-8c9f03a8e57e // indirect
-	github.com/google/pprof v0.0.0-20190723021845-34ac40c74b70 // indirect
 	github.com/jetstack/cert-manager v0.16.0
 	github.com/onsi/ginkgo v1.11.0
 	github.com/onsi/gomega v1.8.1
@@ -19,7 +16,6 @@ require (
 	gomodules.xyz/cert v1.1.2
 	gomodules.xyz/envsubst v0.1.0
 	gomodules.xyz/version v0.1.0
-	google.golang.org/appengine v1.6.6 // indirect
 	k8s.io/api v0.18.5
 	k8s.io/apiextensions-apiserver v0.18.5
 	k8s.io/apimachinery v0.18.5
