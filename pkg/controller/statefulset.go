@@ -53,6 +53,11 @@ func (c *Controller) ensureStatefulSet(redis *api.Redis, statefulSetName string,
 		return kutil.VerbUnchanged, err
 	}
 
+	// create Governing Service
+	if err := c.ensureRedisGvrSvc(redis, getGvrSvcName(redis), redis.OffshootLabels(), redis.OffshootSelectors()); err != nil {
+		return kutil.VerbUnchanged, fmt.Errorf(`failed to create governing Service for "%v/%v". Reason: %v`, redis.Namespace, redis.Name, err)
+	}
+
 	// Create statefulSet for Redis database
 	statefulSet, vt, err := c.createStatefulSet(redis, statefulSetName, removeSlave)
 	if err != nil {
@@ -250,7 +255,7 @@ func (c *Controller) createStatefulSet(redis *api.Redis, statefulSetName string,
 				in.Spec.Replicas = types.Int32P(*redis.Spec.Cluster.Replicas + 1)
 			}
 		}
-		in.Spec.ServiceName = c.GoverningService
+		in.Spec.ServiceName = getGvrSvcName(redis)
 
 		labels := redis.OffshootSelectors()
 		if redis.Spec.Mode == api.RedisModeCluster {
@@ -413,6 +418,15 @@ func (c *Controller) createStatefulSet(redis *api.Redis, statefulSetName string,
 
 		return in
 	}, metav1.PatchOptions{})
+}
+
+// TODO: move this to redis helpers
+func getGvrSvcName(r *api.Redis) string {
+	name := r.OffshootName()
+	if name == "" {
+		panic(fmt.Sprintf("StatefulSet name is missing for Redis %s/%s", r.Namespace, r.Name))
+	}
+	return name + "-gvr"
 }
 
 func upsertDataVolume(statefulSet *apps.StatefulSet, redis *api.Redis) *apps.StatefulSet {

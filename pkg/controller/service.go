@@ -163,3 +163,58 @@ func (c *Controller) ensureStatsService(redis *api.Redis) (kutil.VerbType, error
 	}
 	return vt, nil
 }
+
+func (c *Controller) ensureRedisGvrSvc(redis *api.Redis, svcName string, labels, selectors map[string]string) error {
+	owner := metav1.NewControllerRef(redis, api.SchemeGroupVersion.WithKind(api.ResourceKindRedis))
+
+	// Check if service name exists with different db kind
+	if err := c.checkService(redis, svcName); err != nil {
+		return err
+	}
+
+	meta := metav1.ObjectMeta{
+		Name:      svcName,
+		Namespace: redis.Namespace,
+	}
+
+	_, vt, err := core_util.CreateOrPatchService(
+		context.TODO(),
+		c.Client,
+		meta,
+		func(in *core.Service) *core.Service {
+			core_util.EnsureOwnerReference(&in.ObjectMeta, owner)
+			in.Labels = labels
+			// 'tolerate-unready-endpoints' annotation is deprecated.
+			// Use: spec.PublishNotReadyAddresses
+			// ref: https://github.com/kubernetes/kubernetes/pull/63742.
+			// TODO: delete this annotation
+			in.Annotations = map[string]string{
+				"service.alpha.kubernetes.io/tolerate-unready-endpoints": "true",
+			}
+			in.Spec.Selector = selectors
+			in.Spec.Type = core.ServiceTypeClusterIP
+			in.Spec.ClusterIP = core.ClusterIPNone
+			in.Spec.PublishNotReadyAddresses = true
+			in.Spec.Ports = []core.ServicePort{
+				{
+					Name: defaultDBPort.Name,
+					Port: defaultDBPort.Port,
+				},
+			}
+			return in
+		},
+		metav1.PatchOptions{},
+	)
+
+	if err == nil {
+		c.recorder.Eventf(
+			redis,
+			core.EventTypeNormal,
+			eventer.EventReasonSuccessful,
+			"Successfully %s gvr service",
+			vt,
+		)
+	}
+	return err
+
+}
